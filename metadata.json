@@ -1,0 +1,11 @@
+{
+  "name": "Sonic AI: Intelligent Equalizer",
+<<<<<<< HEAD
+  "description": "A professional-grade parametric equalizer that uses Gemini AI to fine-tune your sound based on your personal hearing preferences and music taste.",
+  "requestFramePermissions": [],
+=======
+  "description": "A professional-grade parametric equalizer with on-device math (Kalman, polynomial regression, mutual information, dynamic-Q optimisation, parabolic peak detection) that fine-tunes 10 EQ bands to your personal hearing preferences. Zero external AI dependencies.",
+  "requestFramePermissions": ["microphone", "usb"],
+>>>>>>> 7065542 (Khởi tạo dự án hoặc mô tả thay đổi)
+  "majorCapabilities": []
+}
