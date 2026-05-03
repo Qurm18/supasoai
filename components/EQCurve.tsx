@@ -1,20 +1,34 @@
 'use client';
 
+
 import React, { useMemo } from 'react';
 import { EQBand } from '@/lib/audio-engine';
+import { TARGET_CURVES, sampleTarget, TargetCurve } from '@/lib/eq-targets';
+
 
 interface EQCurveProps {
   bands: EQBand[];
+  baseCorrection?: number[];
+  ghostGains?: number[];
+  target?: string;
+  highlightBand?: number | null;
+  onBandChange?: (index: number, params: Partial<EQBand>) => void;
+  className?: string;
+  preAmp?: number;
+  analyzerNode?: AnalyserNode | null;
+  spectralPeaks?: number[];
 }
 
 // ─── Biquad math: exact Web Audio API transfer function ──────────────────────
-// Returns magnitude in dB at frequency f (Hz) for a single biquad filter
-// Source: Audio EQ Cookbook by Robert Bristow-Johnson
-function biquadMagnitudeDB(band: EQBand, f: number, sampleRate = 48000): number {
-  const { frequency: f0, gain: dBgain, q: Q, type } = band;
-  if (dBgain === 0 && type === 'peaking') return 0;
+// optimized coefficients for speed
+interface CurveCoeffs {
+  b0: number; b1: number; b2: number;
+  a1: number; a2: number;
+}
 
-  const A = Math.pow(10, dBgain / 40); // amplitude (not power)
+function getCurveCoeffs(band: EQBand, sampleRate = 48000): CurveCoeffs {
+  const { frequency: f0, gain: dBgain, q: Q, type } = band;
+  const A = Math.pow(10, dBgain / 40);
   const w0 = (2 * Math.PI * f0) / sampleRate;
   const cosW0 = Math.cos(w0);
   const sinW0 = Math.sin(w0);
@@ -24,12 +38,8 @@ function biquadMagnitudeDB(band: EQBand, f: number, sampleRate = 48000): number 
 
   switch (type) {
     case 'peaking':
-      b0 =  1 + alpha * A;
-      b1 = -2 * cosW0;
-      b2 =  1 - alpha * A;
-      a0 =  1 + alpha / A;
-      a1 = -2 * cosW0;
-      a2 =  1 - alpha / A;
+      b0 =  1 + alpha * A;  b1 = -2 * cosW0;  b2 = 1 - alpha * A;
+      a0 =  1 + alpha / A;  a1 = -2 * cosW0;  a2 = 1 - alpha / A;
       break;
     case 'lowshelf':
       b0 =      A * ((A + 1) - (A - 1) * cosW0 + 2 * Math.sqrt(A) * alpha);
@@ -47,64 +57,45 @@ function biquadMagnitudeDB(band: EQBand, f: number, sampleRate = 48000): number 
       a1 =      2 * ((A - 1) - (A + 1) * cosW0);
       a2 =             (A + 1) - (A - 1) * cosW0 - 2 * Math.sqrt(A) * alpha;
       break;
-    case 'notch':
-      b0 =  1;
-      b1 = -2 * cosW0;
-      b2 =  1;
-      a0 =  1 + alpha;
-      a1 = -2 * cosW0;
-      a2 =  1 - alpha;
-      break;
-    case 'bandpass':
-      b0 =  sinW0 / 2;
-      b1 =  0;
-      b2 = -sinW0 / 2;
-      a0 =  1 + alpha;
-      a1 = -2 * cosW0;
-      a2 =  1 - alpha;
-      break;
-    default:
-      return 0;
   }
+  return { b0: b0/a0, b1: b1/a0, b2: b2/a0, a1: a1/a0, a2: a2/a0 };
+}
 
-  // Normalize coefficients
-  b0 /= a0; b1 /= a0; b2 /= a0;
-  a1 /= a0; a2 /= a0;
-
-  // Compute H(e^jw) at w = 2*pi*f/fs using the bilinear z-transform evaluation
+function biquadMagFast(c: CurveCoeffs, f: number, sampleRate = 48000): number {
   const w = (2 * Math.PI * f) / sampleRate;
-  const cosW = Math.cos(w);
-  const sinW = Math.sin(w);
+  const cosW = Math.cos(w), sinW = Math.sin(w);
+  const cos2W = Math.cos(2*w), sin2W = Math.sin(2*w);
 
-  // H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
-  // At z = e^jw: numerator and denominator are complex numbers
-  const numRe = b0 + b1 * cosW + b2 * Math.cos(2 * w);
-  const numIm =    - b1 * sinW - b2 * Math.sin(2 * w);
-  const denRe = 1  + a1 * cosW + a2 * Math.cos(2 * w);
-  const denIm =    - a1 * sinW - a2 * Math.sin(2 * w);
+  const numRe = c.b0 + c.b1 * cosW + c.b2 * cos2W;
+  const numIm =      - c.b1 * sinW - c.b2 * sin2W;
+  const denRe = 1    + c.a1 * cosW + c.a2 * cos2W;
+  const denIm =      - c.a1 * sinW - c.a2 * sin2W;
 
   const numMag2 = numRe * numRe + numIm * numIm;
   const denMag2 = denRe * denRe + denIm * denIm;
-
-  if (denMag2 === 0) return 0;
+  if (denMag2 < 1e-20) return 0;
   return 10 * Math.log10(numMag2 / denMag2);
 }
 
-// ─── Sum all bands at each frequency point ───────────────────────────────────
-function computeCurve(bands: EQBand[], numPoints = 120): { freq: number; gain: number }[] {
+function computeCurveFast(bands: EQBand[], baseCorrection?: number[], numPoints = 200): { freq: number; gain: number }[] {
   const points: { freq: number; gain: number }[] = [];
+  const bandFreqs = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+  const bandCoeffs = bands.map(b => getCurveCoeffs(b));
+  const correctionCoeffs = (baseCorrection || []).map((gain, i) => 
+    gain !== 0 ? getCurveCoeffs({ frequency: bandFreqs[i], gain, q: 1.0, type: 'peaking' } as EQBand) : null
+  ).filter(Boolean) as CurveCoeffs[];
+
   for (let i = 0; i <= numPoints; i++) {
-    const freq = 20 * Math.pow(1000, i / numPoints); // log sweep 20Hz → 20kHz
+    const freq = 20 * Math.pow(1000, i / numPoints);
     let totalDB = 0;
-    for (const band of bands) {
-      totalDB += biquadMagnitudeDB(band, freq);
-    }
-    points.push({ freq: Math.round(freq), gain: parseFloat(totalDB.toFixed(2)) });
+    for (let j = 0; j < bandCoeffs.length; j++) totalDB += biquadMagFast(bandCoeffs[j], freq);
+    for (let j = 0; j < correctionCoeffs.length; j++) totalDB += biquadMagFast(correctionCoeffs[j], freq);
+    points.push({ freq, gain: totalDB });
   }
   return points;
 }
 
-// ─── SVG path builder ────────────────────────────────────────────────────────
 function buildPath(
   points: { freq: number; gain: number }[],
   width: number,
@@ -125,44 +116,80 @@ function buildPath(
     .join(' ');
 }
 
-// ─── Frequency grid labels ───────────────────────────────────────────────────
 const FREQ_LABELS = [
-  { f: 32, label: '32' },
-  { f: 100, label: '100' },
-  { f: 250, label: '250' },
-  { f: 500, label: '500' },
-  { f: 1000, label: '1k' },
-  { f: 4000, label: '4k' },
+  { f: 32,    label: '32' },
+  { f: 100,   label: '100' },
+  { f: 250,   label: '250' },
+  { f: 500,   label: '500' },
+  { f: 1000,  label: '1k' },
+  { f: 4000,  label: '4k' },
   { f: 10000, label: '10k' },
   { f: 16000, label: '16k' },
 ];
 
 const DB_LINES = [9, 6, 3, 0, -3, -6, -9];
 
-export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
+export const EQCurve: React.FC<EQCurveProps> = ({ 
+  bands, 
+  baseCorrection, 
+  target = 'none', 
+  highlightBand = null,
+  spectralPeaks = [],
+  ghostGains
+}) => {
   const W = 800;
   const H = 200;
   const DB_RANGE = 13;
 
-  const { points, linePath, fillPath } = useMemo(() => {
-    const pts = computeCurve(bands, 200);
+  const targetCurve: TargetCurve | null = useMemo(
+    () => TARGET_CURVES.find((c) => c.id === target) ?? null,
+    [target]
+  );
+
+  const numPoints = 160;
+
+  const { points, linePath, fillPath, targetPath, ghostPath, ghostFillPath } = useMemo(() => {
+    const pts = computeCurveFast(bands, baseCorrection, numPoints);
+    const line = buildPath(pts, W, H, DB_RANGE);
 
     const freqToX = (f: number) =>
       ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * W;
-    const gainToY = (g: number) =>
-      H / 2 - (g / DB_RANGE) * (H / 2) * 0.85;
-
-    const line = buildPath(pts, W, H, DB_RANGE);
-
-    // Closed fill path: go along curve then back along bottom
+      
     const firstX = freqToX(pts[0].freq);
     const lastX = freqToX(pts[pts.length - 1].freq);
     const fill = `${line} L${lastX.toFixed(1)},${H / 2} L${firstX.toFixed(1)},${H / 2} Z`;
 
-    return { points: pts, linePath: line, fillPath: fill };
-  }, [bands]);
+    let tPath: string | null = null;
+    if (targetCurve) {
+      const tPts: { freq: number; gain: number }[] = [];
+      for (let i = 0; i <= numPoints; i++) {
+        const f = 20 * Math.pow(1000, i / numPoints);
+        tPts.push({ freq: Math.round(f), gain: sampleTarget(targetCurve, f) });
+      }
+      tPath = buildPath(tPts, W, H, DB_RANGE);
+    }
 
-  // Hover state for tooltip
+    let gPath: string | null = null;
+    let gFillPath: string | null = null;
+    if (ghostGains && ghostGains.length === 10) {
+      // Ghost = live dynamic EQ position (user base + AI offset).
+      // Main curve = user's static EQ intent.
+      // Only render ghost when there is meaningful movement (> 0.3 dB on any band).
+      const hasMovement = ghostGains.some((g: number) => Math.abs(g) > 0.3);
+      if (hasMovement) {
+        const gBands = bands.map((b, i) => ({ ...b, gain: b.gain + (ghostGains[i] || 0) }));
+        const gPts = computeCurveFast(gBands, baseCorrection, numPoints);
+        gPath = buildPath(gPts, W, H, DB_RANGE);
+        const freqToXg = (f: number) => ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * W;
+        const gFirstX = freqToXg(gPts[0].freq);
+        const gLastX  = freqToXg(gPts[gPts.length - 1].freq);
+        gFillPath = `${gPath} L${gLastX.toFixed(1)},${H / 2} L${gFirstX.toFixed(1)},${H / 2} Z`;
+      }
+    }
+
+    return { points: pts, linePath: line, fillPath: fill, targetPath: tPath, ghostPath: gPath, ghostFillPath: gFillPath };
+  }, [bands, baseCorrection, ghostGains, targetCurve, numPoints]);
+
   const [hoverInfo, setHoverInfo] = React.useState<{ x: number; freq: number; gain: number } | null>(null);
 
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -170,7 +197,6 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
     const xRatio = (e.clientX - rect.left) / rect.width;
     const freq = 20 * Math.pow(1000, xRatio);
     const clampedFreq = Math.max(20, Math.min(20000, freq));
-    // Find nearest point
     const nearest = points.reduce((best, p) =>
       Math.abs(Math.log10(p.freq) - Math.log10(clampedFreq)) <
       Math.abs(Math.log10(best.freq) - Math.log10(clampedFreq)) ? p : best
@@ -180,9 +206,12 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
 
   const freqToXPct = (f: number) =>
     ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * 100;
+  const gainToYPct = (g: number) =>
+    50 - (g / DB_RANGE) * 50 * 0.85;
 
   return (
-    <div className="w-full h-32 md:h-48 bg-[#0a0a0b] rounded-2xl border border-white/10 overflow-hidden relative group">
+    <div className="w-full h-36 md:h-52 bg-[#0a0a0c] rounded-2xl border border-white/10 overflow-hidden relative group shadow-2xl">
+      {/* Subtle background noise texture could go here */}
       <svg
         viewBox={`0 0 ${W} ${H}`}
         preserveAspectRatio="none"
@@ -192,33 +221,52 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
       >
         <defs>
           <linearGradient id="eqFillGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#F27D26" stopOpacity="0.45" />
-            <stop offset="60%" stopColor="#F27D26" stopOpacity="0.08" />
+            <stop offset="0%" stopColor="#F27D26" stopOpacity="0.5" />
+            <stop offset="70%" stopColor="#F27D26" stopOpacity="0.05" />
             <stop offset="100%" stopColor="#F27D26" stopOpacity="0" />
           </linearGradient>
-          <filter id="curveGlow">
-            <feGaussianBlur stdDeviation="2.5" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          <linearGradient id="eqStrokeGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%"  stopColor="#8b5cf6" />
+            <stop offset="50%" stopColor="#F27D26" />
+            <stop offset="100%" stopColor="#ec4899" />
+          </linearGradient>
+          <linearGradient id="ghostFillGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#F27D26" stopOpacity="0.4" />
+            <stop offset="100%" stopColor="#F27D26" stopOpacity="0" />
+          </linearGradient>
+          <filter id="curveGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="4.5" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
-          <clipPath id="curveClip">
-            <rect x="0" y="0" width={W} height={H / 2} />
-          </clipPath>
-          <clipPath id="curveCutClip">
-            <rect x="0" y={H / 2} width={W} height={H / 2} />
-          </clipPath>
+          <filter id="ghostGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="6" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
+          <clipPath id="curveClip"><rect x="0" y="0" width={W} height={H / 2} /></clipPath>
+          <clipPath id="curveCutClip"><rect x="0" y={H / 2} width={W} height={H / 2} /></clipPath>
+          <pattern id="gridPattern" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="white" strokeWidth="0.5" />
+          </pattern>
         </defs>
 
+        {/* Multi-layered grid */}
+        <rect width={W} height={H} fill="url(#gridPattern)" opacity={0.1} />
+        
         {/* dB grid lines */}
-        {DB_LINES.map(db => {
+        {DB_LINES.map((db) => {
           const y = H / 2 - (db / DB_RANGE) * (H / 2) * 0.85;
+          const isMain = db === 0;
           return (
-            <line
-              key={db}
-              x1={0} y1={y} x2={W} y2={y}
-              stroke={db === 0 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)'}
-              strokeWidth={db === 0 ? 1.5 : 1}
-              strokeDasharray={db === 0 ? undefined : '4 6'}
-            />
+            <g key={db}>
+              <line
+                x1={0} y1={y} x2={W} y2={y}
+                stroke={isMain ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.05)'}
+                strokeWidth={isMain ? 2 : 1}
+              />
+              <text x={W - 30} y={y - 5} fill="rgba(255,255,255,0.15)" fontSize="9" fontFamily="JetBrains Mono">
+                {db > 0 ? `+${db}` : db}
+              </text>
+            </g>
           );
         })}
 
@@ -235,17 +283,82 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
           );
         })}
 
-        {/* Boost fill (above zero line) */}
+        {/* Target overlay */}
+        {targetPath && (
+          <path
+            d={targetPath}
+            fill="none"
+            stroke="rgba(168,212,255,0.55)"
+            strokeWidth={1.5}
+            strokeDasharray="5 4"
+          />
+        )}
+
+        {/* Ghost Dynamic EQ path — shows user's static base curve while dynamic AI moves the main curve */}
+        {ghostPath && ghostFillPath && (
+          <g opacity={0.55}>
+            {/* Subtle fill hint */}
+            <path
+              d={ghostFillPath}
+              fill="rgba(255,255,255,0.03)"
+              clipPath="url(#curveClip)"
+            />
+            {/* Dashed ghost stroke — clean, non-distracting */}
+            <path
+              d={ghostPath}
+              fill="none"
+              stroke="rgba(255,255,255,0.25)"
+              strokeWidth={1.5}
+              strokeDasharray="6 5"
+              strokeLinecap="round"
+            />
+          </g>
+        )}
+
+        {/* Boost / cut fills */}
         <path d={fillPath} fill="url(#eqFillGrad)" clipPath="url(#curveClip)" />
+        <path d={fillPath} fill="rgba(100,140,255,0.10)" clipPath="url(#curveCutClip)" />
 
-        {/* Cut fill (below zero line) */}
-        <path d={fillPath} fill="rgba(100,140,255,0.08)" clipPath="url(#curveCutClip)" />
+        {/* Glow + main curve */}
+        <path d={linePath} fill="none" stroke="url(#eqStrokeGrad)" strokeWidth={6} strokeOpacity={0.22} filter="url(#curveGlow)" />
+        <path d={linePath} fill="none" stroke="url(#eqStrokeGrad)" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
 
-        {/* Glow layer */}
-        <path d={linePath} fill="none" stroke="#F27D26" strokeWidth={6} strokeOpacity={0.2} filter="url(#curveGlow)" />
+        {/* Resonance Markers (Phase 1.2) */}
+        {spectralPeaks.map((freq, i) => {
+          const x = freqToXPct(freq) * (W / 100);
+          return (
+            <line
+              key={`peak-${i}`}
+              x1={x}
+              y1="0"
+              x2={x}
+              y2={H}
+              stroke="rgba(255, 255, 255, 0.12)"
+              strokeDasharray="2 4"
+              strokeWidth="0.8"
+            />
+          );
+        })}
 
-        {/* Main curve */}
-        <path d={linePath} fill="none" stroke="#F27D26" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+        {/* Per-band markers */}
+        {bands.map((band, i) => {
+              const x = freqToXPct(band.frequency) * (W / 100);
+              const coeffs = getCurveCoeffs(band);
+              const userAtFreq = biquadMagFast(coeffs, band.frequency);
+              const baseAtFreq = baseCorrection?.reduce((acc, g, idx) => acc + biquadMagFast(getCurveCoeffs({ frequency: [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000][idx], gain: g, q: 1.0, type: 'peaking' } as EQBand), band.frequency), 0) || 0;
+              const y = H / 2 - ((userAtFreq + baseAtFreq) / DB_RANGE) * (H / 2) * 0.85;
+          const isHighlight = highlightBand === i;
+          const r = isHighlight ? 5 : Math.min(4, 1.5 + Math.abs(band.gain) * 0.18);
+          const opacity = Math.abs(band.gain) < 0.05 ? 0.25 : 0.9;
+          return (
+            <g key={i} opacity={opacity}>
+              <circle cx={x} cy={y} r={r} fill="#fff" stroke="#F27D26" strokeWidth={1.5} />
+              {isHighlight && (
+                <circle cx={x} cy={y} r={r + 4} fill="none" stroke="#F27D26" strokeWidth={1} opacity={0.5} />
+              )}
+            </g>
+          );
+        })}
 
         {/* Hover crosshair */}
         {hoverInfo && (() => {
@@ -253,19 +366,19 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
           const y = H / 2 - (hoverInfo.gain / DB_RANGE) * (H / 2) * 0.85;
           return (
             <>
-              <line x1={x} y1={0} x2={x} y2={H} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3 4" />
-              <circle cx={x} cy={y} r={4} fill="#F27D26" stroke="#fff" strokeWidth={1.5} />
+              <line x1={x} y1={0} x2={x} y2={H} stroke="rgba(255,255,255,0.18)" strokeWidth={1} strokeDasharray="3 4" />
+              <circle cx={x} cy={y} r={4.5} fill="#F27D26" stroke="#fff" strokeWidth={1.5} />
             </>
           );
         })()}
       </svg>
 
       {/* Frequency labels */}
-      <div className="absolute bottom-2 left-0 right-0 flex pointer-events-none px-1">
+      <div className="absolute bottom-2 left-0 right-0 pointer-events-none px-1 h-2">
         {FREQ_LABELS.map(({ f, label }) => (
           <span
             key={f}
-            className="absolute text-[8px] font-mono text-white/20 transform -translate-x-1/2"
+            className="absolute text-[8px] font-mono text-white/25 transform -translate-x-1/2"
             style={{ left: `${freqToXPct(f)}%` }}
           >
             {label}
@@ -275,8 +388,8 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
 
       {/* dB labels */}
       <div className="absolute top-0 left-2 h-full flex flex-col justify-between pointer-events-none py-2">
-        {['+12', '+6', '0', '-6', '-12'].map(l => (
-          <span key={l} className="text-[7px] font-mono text-white/15">{l}</span>
+        {['+12', '+6', '0', '-6', '-12'].map((l) => (
+          <span key={l} className="text-[7px] font-mono text-white/20">{l}</span>
         ))}
       </div>
 
@@ -285,24 +398,29 @@ export const EQCurve: React.FC<EQCurveProps> = ({ bands }) => {
         <div
           className="absolute top-3 pointer-events-none bg-[#1a1c20]/90 border border-white/10 px-2.5 py-1.5 rounded-lg shadow-xl backdrop-blur-sm"
           style={{
-            left: hoverInfo.x < 75 ? `calc(${hoverInfo.x}% + 10px)` : undefined,
+            left:  hoverInfo.x < 75 ? `calc(${hoverInfo.x}% + 10px)` : undefined,
             right: hoverInfo.x >= 75 ? `calc(${100 - hoverInfo.x}% + 10px)` : undefined,
           }}
         >
           <p className="text-[9px] font-mono text-[#8E9299] uppercase tracking-widest">
             {hoverInfo.freq >= 1000 ? `${(hoverInfo.freq / 1000).toFixed(1)}kHz` : `${hoverInfo.freq}Hz`}
           </p>
-          <p className="text-sm font-black text-white">
+          <p className="text-sm font-black text-white tabular-nums">
             {hoverInfo.gain >= 0 ? '+' : ''}{hoverInfo.gain.toFixed(1)} dB
           </p>
         </div>
       )}
 
-      {/* Badge */}
-      <div className="absolute top-3 left-4 pointer-events-none">
-        <span className="text-[9px] font-mono text-white/25 uppercase tracking-widest bg-black/30 px-2 py-0.5 rounded">
-          Biquad · Exact Response
+      {/* Top-left badges */}
+      <div className="absolute top-3 left-4 flex items-center gap-2 pointer-events-none">
+        <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest bg-black/30 px-2 py-0.5 rounded">
+          Biquad · Exact
         </span>
+        {targetCurve && (
+          <span className="text-[9px] font-mono uppercase tracking-widest px-2 py-0.5 rounded border border-blue-300/30 text-blue-200/80 bg-blue-400/10">
+            Target: {targetCurve.name}
+          </span>
+        )}
       </div>
     </div>
   );

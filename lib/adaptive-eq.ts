@@ -48,11 +48,17 @@ export interface Interaction {
   confidence?: number; // Tầng 2 implicit signal [0..1.5+]
 }
 
+export interface AdamState {
+  m: number[];  // 1st moment (mean)
+  v: number[];  // 2nd moment (variance)
+  t: number;    // timestep
+}
+
 export interface LearnerState {
   globalPreference: number[];  // -1..1 per band
-  globalVelocity?: number[];    // For Polyak momentum
+  globalAdam?: AdamState;       // Adam optimizer state for global preference
   contextPreferences: Record<string, number[]>; // key: sectionType
-  contextVelocities?: Record<string, number[]>;
+  contextAdam?: Record<string, AdamState>;      // Adam optimizer state per context
   W?: number[][];               // [10 bands][8 dimensions] ma trận hồi quy
   b?: number[];                 // [10 bands] bias vector
   uncertainty?: number[];       // [10 bands] độ bất định (variance)
@@ -61,11 +67,13 @@ export interface LearnerState {
   interactionCount: number;
 }
 
+const A_WEIGHTS = [0.1, 0.3, 0.7, 1.0, 1.2, 1.1, 1.0, 0.8, 0.6, 0.3];
+const EMA_ALPHA = 0.8;
+
 export class AdaptiveEQLearner {
   private state: LearnerState;
   private readonly LEARNING_RATE_BASE = 0.2;
   private readonly NUM_BANDS = 10;
-  private readonly MOMENTUM = 0.8;
   private readonly NUM_FINGERPRINT_DIMS = 8;
   private readonly REG_LAMBDA = 0.01; // Regularization for ridge regression
   private readonly CONVERGENCE_ALPHA = 0.8;
@@ -86,6 +94,8 @@ export class AdaptiveEQLearner {
         stability: 0.5,
         convergence: 0,
         interactionCount: 0,
+        globalAdam: { m: new Array(this.NUM_BANDS).fill(0), v: new Array(this.NUM_BANDS).fill(0), t: 0 },
+        contextAdam: {}
       };
     }
 
@@ -101,6 +111,12 @@ export class AdaptiveEQLearner {
     }
     if (this.state.convergence === undefined) {
       this.state.convergence = 0;
+    }
+    if (!this.state.globalAdam) {
+      this.state.globalAdam = { m: new Array(this.NUM_BANDS).fill(0), v: new Array(this.NUM_BANDS).fill(0), t: 0 };
+    }
+    if (!this.state.contextAdam) {
+      this.state.contextAdam = {};
     }
   }
 
@@ -144,13 +160,13 @@ export class AdaptiveEQLearner {
       Math.min(1.0, u * 1.1)
     );
 
-    // Cập nhật velocity về 0 (dừng momentum)
-    const newVelocity = new Array(this.NUM_BANDS).fill(0);
+    // Reset Adam state to stop momentum
+    const newGlobalAdam = { m: new Array(this.NUM_BANDS).fill(0), v: new Array(this.NUM_BANDS).fill(0), t: 0 };
 
     return {
       ...this.state,
       globalPreference: newGlobal,
-      globalVelocity: newVelocity,
+      globalAdam: newGlobalAdam,
       uncertainty: newUncertainty,
       stability: Math.max(0, this.state.stability - 0.04),
       interactionCount: this.state.interactionCount + 1,
@@ -223,14 +239,20 @@ export class AdaptiveEQLearner {
       return Math.max(0.1, Math.min(1.0, u * factor));
     });
 
-    // Update both global and specific context vectors
-    const updateVector = (pref: number[], velocity?: number[]) => {
-      const v = velocity || new Array(this.NUM_BANDS).fill(0);
+    // Update both global and specific context vectors using Adam Optimizer
+    const beta1 = 0.9;
+    const beta2 = 0.999;
+    const eps = 1e-8;
+
+    const updateAdamVector = (pref: number[], adamState?: AdamState) => {
+      const state = adamState || { m: new Array(this.NUM_BANDS).fill(0), v: new Array(this.NUM_BANDS).fill(0), t: 0 };
+      const nextAdam = { ...state, m: [...state.m], v: [...state.v], t: state.t + 1 };
       const nextPref = new Array(this.NUM_BANDS);
-      const nextVel = new Array(this.NUM_BANDS);
+
+      const lrT = lr * Math.sqrt(1 - Math.pow(beta2, nextAdam.t)) / (1 - Math.pow(beta1, nextAdam.t));
 
       for (let i = 0; i < this.NUM_BANDS; i++) {
-        let grad = lr * delta[i] * contextWeight[i];
+        let grad = delta[i] * contextWeight[i];
 
         // 15. Anti-contradiction: if conflicting with current pref, reduce impact
         if (grad * pref[i] < 0) {
@@ -244,18 +266,31 @@ export class AdaptiveEQLearner {
         }
         if (i > 7 && features.isHarsh) grad *= 0.2;
 
-        // 14. Polyak Momentum (Heavy Ball)
-        // v_t = momentum * v_{t-1} + update
-        // p_t = p_{t-1} + v_t
-        nextVel[i] = this.MOMENTUM * v[i] + grad;
-        nextPref[i] = Math.max(-1, Math.min(1, pref[i] + nextVel[i]));
+        // Apply Perceptual Weighting
+        grad *= A_WEIGHTS[i];
+
+        // Adam update
+        nextAdam.m[i] = beta1 * nextAdam.m[i] + (1 - beta1) * grad;
+        nextAdam.v[i] = beta2 * nextAdam.v[i] + (1 - beta2) * grad * grad;
+
+        const update = lrT * nextAdam.m[i] / (Math.sqrt(nextAdam.v[i]) + eps);
+
+        // Regularization (Weight Decay) to prevent overfitting
+        const reg = 0.001 * pref[i];
+
+        const rawNext = pref[i] + update - reg;
+
+        // Smooth EQ Updates using Exponential Moving Average (EMA)
+        const smoothedNext = EMA_ALPHA * rawNext + (1 - EMA_ALPHA) * pref[i];
+
+        nextPref[i] = Math.max(-1, Math.min(1, smoothedNext));
       }
-      return { pref: nextPref, vel: nextVel };
+      return { pref: nextPref, adam: nextAdam };
     };
 
-    const { pref: newGlobal, vel: newGlobalVel } = updateVector(
+    const { pref: newGlobal, adam: newGlobalAdam } = updateAdamVector(
       this.state.globalPreference, 
-      this.state.globalVelocity
+      this.state.globalAdam
     );
 
     const gainsDelta = newGlobal.reduce((acc, v, i) => acc + Math.abs(v - this.state.globalPreference[i]), 0) / this.NUM_BANDS;
@@ -265,9 +300,9 @@ export class AdaptiveEQLearner {
     
     const contextType = context.sectionType;
     const currentContextPref = this.state.contextPreferences[contextType] || new Array(this.NUM_BANDS).fill(0);
-    const currentContextVel = (this.state.contextVelocities || {})[contextType] || new Array(this.NUM_BANDS).fill(0);
+    const currentContextAdam = (this.state.contextAdam || {})[contextType];
     
-    const { pref: newContextPref, vel: newContextVel } = updateVector(currentContextPref, currentContextVel);
+    const { pref: newContextPref, adam: newContextAdam } = updateAdamVector(currentContextPref, currentContextAdam);
 
     // Symmetric Stability Update
     const manualMag = Math.sqrt(delta.reduce((a, v) => a + v * v, 0));
@@ -281,15 +316,16 @@ export class AdaptiveEQLearner {
     const newStability = Math.max(0, Math.min(0.95, (this.state.stability || 0.5) + stabilityDelta));
 
     this.state = {
+      ...this.state, // Make sure we preserve properties not explicitly listed
       globalPreference: newGlobal,
-      globalVelocity: newGlobalVel,
+      globalAdam: newGlobalAdam,
       contextPreferences: {
         ...this.state.contextPreferences,
         [contextType]: newContextPref
       },
-      contextVelocities: {
-        ...(this.state.contextVelocities || {}),
-        [contextType]: newContextVel
+      contextAdam: {
+        ...(this.state.contextAdam || {}),
+        [contextType]: newContextAdam
       },
       W: nextW,
       b: nextB,
@@ -388,5 +424,35 @@ export class AdaptiveEQLearner {
   private computeAudioConstraints(features: AudioFeatures): number[] {
     // Simple band constraints 1.0 = neutral
     return new Array(this.NUM_BANDS).fill(1.0);
+  }
+}
+
+export function adamUpdateEQ(
+  bands: EQBand[],
+  gradients: Float32Array | number[],
+  state: AdamState,
+  lr = 0.001,
+  beta1 = 0.9,
+  beta2 = 0.999,
+  eps = 1e-8
+): void {
+  state.t++;
+  const lrT = lr * Math.sqrt(1 - Math.pow(beta2, state.t)) / (1 - Math.pow(beta1, state.t));
+
+  for (let i = 0; i < bands.length; i++) {
+    // Perceptual weighting
+    const g = gradients[i] * (A_WEIGHTS[i] || 1.0); 
+    
+    state.m[i] = beta1 * state.m[i] + (1 - beta1) * g;
+    state.v[i] = beta2 * state.v[i] + (1 - beta2) * g * g;
+    
+    const update = lrT * state.m[i] / (Math.sqrt(state.v[i]) + eps);
+
+    // L2 Regularization (Weight Decay) to prevent overfitting
+    const reg = 0.001 * bands[i].gain;
+
+    // Smooth EQ Updates using EMA (prevent instability with transients)
+    const rawGain = bands[i].gain + update - reg;
+    bands[i].gain = EMA_ALPHA * rawGain + (1 - EMA_ALPHA) * bands[i].gain;
   }
 }

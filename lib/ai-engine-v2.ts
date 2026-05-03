@@ -7,7 +7,8 @@
  * Effort: 5–6 hours | Impact: ⭐⭐⭐⭐ (major UX improvement)
  */
 
-import { clamp, normalisedMutualInformation, distanceCorrelation } from './math';
+import { normalisedMutualInformation, distanceCorrelation } from './math';
+import { logger } from '@/lib/logger';
 
 // ─── Type Definitions ────────────────────────────────────────────────────
 
@@ -171,15 +172,9 @@ export class ContextualBayesianLearner {
     }
   ): void {
     const key = contextKey(context);
-    const confidence = Math.max(0, Math.min(1, metadata?.confidence ?? 0.5));
-    const listenWeight = Math.min(3, Math.max(0.5, (metadata?.listenTime ?? 15) / 15));
-    const metalearningRate = this.computeAdaptiveAlpha(confidence) * listenWeight;
+    const metalearningRate = this.computeAdaptiveAlpha(metadata?.confidence ?? 0.5);
 
-    if (userChoice === 'NO_PREFERENCE') return;
-
-    const preferredGains = userChoice === 'A' ? choiceA : userChoice === 'B' ? choiceB : null;
-    const baselineGains = userChoice === 'A' ? choiceB : userChoice === 'B' ? choiceA : null;
-
+    // Initialize or retrieve context state
     let ctxState = this.state.contexts.get(key);
     if (!ctxState) {
       const prior = this.computePriorMean(context);
@@ -197,27 +192,45 @@ export class ContextualBayesianLearner {
       this.state.contexts.set(key, ctxState);
     }
 
-    const signalVector = userChoice === 'DISLIKE_BOTH'
-      ? new Array(this.NUM_BANDS).fill(0.5)
-      : this.computePreferenceSignal(preferredGains!, baselineGains!, confidence);
+    // Determine which choice was preferred
+    const preferredGains = userChoice === 'A' ? choiceA : userChoice === 'B' ? choiceB : null;
+    if (!preferredGains && userChoice !== 'DISLIKE_BOTH') return;
 
+    // Update Beta priors per band
     for (let i = 0; i < this.NUM_BANDS; i++) {
-      ctxState.alphas[i] += signalVector[i] * metalearningRate * 10;
-      ctxState.betas[i] += (1 - signalVector[i]) * metalearningRate * 10;
+      // Convert gain to [0, 1] preference signal
+      let signal: number;
+      if (userChoice === 'DISLIKE_BOTH') {
+        // Neither good: move toward neither (regression to 0)
+        signal = 0.5;
+      } else {
+        // Preferred gains are "wins"
+        const normalizedGain = (preferredGains![i] + 12) / 24; // Assume ±12 dB range → [0, 1]
+        signal = Math.max(0, Math.min(1, normalizedGain));
+      }
 
+      // Beta conjugate update: α += wins, β += losses
+      ctxState.alphas[i] += signal * metalearningRate * 10;
+      ctxState.betas[i] += (1 - signal) * metalearningRate * 10;
+
+      // Mean of Beta(α, β) is α/(α+β)
       const newMean = ctxState.alphas[i] / (ctxState.alphas[i] + ctxState.betas[i]);
-      const clippedMean = clamp((newMean * 24) - 12, -15, 15);
-      ctxState.mean[i] = clippedMean;
-      ctxState.gains[i] = clippedMean;
-      ctxState.variance[i] = this.computeBetaVariance(ctxState.alphas[i], ctxState.betas[i]);
+      // Convert back to dB
+      ctxState.mean[i] = (newMean * 24) - 12;
+
+      // Variance of Beta: α*β / ((α+β)² * (α+β+1))
+      const n = ctxState.alphas[i] + ctxState.betas[i];
+      ctxState.variance[i] = (ctxState.alphas[i] * ctxState.betas[i]) / (n * n * (n + 1));
     }
 
+    // Update confidence and sample size
     ctxState.sampleSize++;
-    ctxState.confidence = Math.min(1, ctxState.sampleSize / 10);
+    ctxState.confidence = Math.min(1, ctxState.sampleSize / 10); // Saturates at 10 samples
     ctxState.lastUpdated = Date.now();
 
+    // Update global state with memory decay
     this.updateGlobalGains(ctxState.mean);
-    this.state.globalUncertainty = this.computeGlobalUncertainty();
+
     this.state.totalInteractions++;
   }
 
@@ -234,76 +247,58 @@ export class ContextualBayesianLearner {
     contexts: string[];
   } {
     const key = contextKey(context);
+
+    // Exact match
     const exactMatch = this.state.contexts.get(key);
     if (exactMatch && exactMatch.confidence > 0.5) {
-      const exactGains = exactMatch.mean.map((g) => clamp(g, -15, 15));
-      const exactExplored = explorationMode
-        ? exactGains.map((g) => clamp(g + (Math.random() - 0.5) * this.state.explorationBonus * 4, -15, 15))
-        : exactGains;
       return {
-        gains: exactExplored,
+        gains: exactMatch.mean.slice(),
         uncertainty: exactMatch.variance.map((v) => Math.sqrt(v)),
         confidence: exactMatch.confidence,
         contexts: [key],
       };
     }
 
-    const prior = this.computePriorMean(context);
+    // Fallback: find similar contexts and blend
     const candidates = Array.from(this.state.contexts.values())
-      .map((ctx) => ({
-        ctx,
-        similarity: contextSimilarity(context, this.parseContextKey(ctx.contextKey)),
-      }))
-      .filter((x) => x.similarity >= 0.2)
+      .map((ctx) => {
+        const ctxObj = this.parseContextKey(ctx.contextKey);
+        return {
+          ctx,
+          similarity: contextSimilarity(context, ctxObj),
+        };
+      })
+      .filter((x) => x.similarity > 0.5)
       .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, 6);
-
-    const genrePrior = GENRE_PRIORS[context.genre] ?? new Array(10).fill(0);
-    const fallbackGains = this.blendGains([this.state.globalGains, genrePrior, prior], [0.5, 0.25, 0.25]).map((g) => clamp(g, -15, 15));
+      .slice(0, 3);
 
     if (candidates.length === 0) {
+      // Use global + genre prior
+      const genrePrior = GENRE_PRIORS[context.genre] ?? new Array(10).fill(0);
       return {
-        gains: fallbackGains,
+        gains: this.blendGains([this.state.globalGains, genrePrior], [0.7, 0.3]),
         uncertainty: this.state.globalUncertainty.slice(),
         confidence: 0.2,
         contexts: [],
       };
     }
 
-    const scored = candidates.map((item) => {
-      const patternSim = Math.max(0, distanceCorrelation(item.ctx.mean, prior));
-      const infoSim = Math.max(0, normalisedMutualInformation(item.ctx.mean, prior));
-      const baseScore = item.similarity * 0.6 + patternSim * 0.25 + infoSim * 0.15;
-      const score = Math.min(1, Math.max(0.01, baseScore));
-      const weight = Math.exp(score * 2.5) * (0.4 + item.ctx.confidence * 0.6);
-      return { ...item, score, weight };
-    });
+    // Weighted blend
+    const weights = candidates.map((x) => x.similarity);
+    const normWeights = weights.map((w) => w / weights.reduce((a, b) => a + b, 0));
+    const candidateGains = candidates.map((x) => x.ctx.mean);
+    const blended = this.blendGains(candidateGains, normWeights);
 
-    const weightSum = scored.reduce((sum, item) => sum + item.weight, 0) || 1;
-    const blended = new Array(this.NUM_BANDS).fill(0).map((_, bandIdx) => {
-      const weighted = scored.reduce((sum, item) => sum + item.ctx.mean[bandIdx] * item.weight, 0)
-        + this.state.globalGains[bandIdx] * 0.25
-        + prior[bandIdx] * 0.1;
-      return clamp(weighted / (weightSum + 0.35), -15, 15);
-    });
-    const uncertainty = new Array(this.NUM_BANDS).fill(0).map((_, bandIdx) => {
-      const weighted = scored.reduce((sum, item) => sum + (item.ctx.variance[bandIdx] ?? 0.5) * item.weight, 0)
-        + this.state.globalUncertainty[bandIdx] * 0.2;
-      return Math.sqrt(weighted / (weightSum + 0.2));
-    });
-
+    // Exploration bonus: if mode enabled, add randomness to encourage discovery
     const explored = explorationMode
-      ? blended.map((value, bandIdx) => {
-          const noiseScale = Math.max(0.25, uncertainty[bandIdx]) * this.state.explorationBonus * 3;
-          return clamp(value + (Math.random() - 0.5) * noiseScale, -15, 15);
-        })
+      ? blended.map((g, i) => g + (Math.random() - 0.5) * this.state.explorationBonus)
       : blended;
 
     return {
       gains: explored,
-      uncertainty,
-      confidence: Math.min(1, scored[0]?.score ?? 0.25),
-      contexts: scored.map((x) => x.ctx.contextKey),
+      uncertainty: candidates[0].ctx.variance.map((v) => Math.sqrt(v)),
+      confidence: candidates[0].similarity,
+      contexts: candidates.map((x) => x.ctx.contextKey),
     };
   }
 
@@ -322,41 +317,11 @@ export class ContextualBayesianLearner {
     return this.blendGains(components, weights);
   }
 
-  private computePreferenceSignal(chosen: number[], alternative: number[], confidence: number): number[] {
-    return chosen.map((gain, i) => {
-      const diff = gain - (alternative[i] ?? 0);
-      const normalized = 0.5 + 0.5 * Math.tanh(diff / 6);
-      const weighted = normalized * (0.5 + 0.5 * confidence);
-      return Math.max(0, Math.min(1, weighted));
-    });
-  }
-
-  private computeBetaVariance(alpha: number, beta: number): number {
-    const n = alpha + beta;
-    return n > 0 ? (alpha * beta) / (n * n * (n + 1)) : 0.25;
-  }
-
-  private computeGlobalUncertainty(): number[] {
-    if (this.state.contexts.size === 0) return new Array(this.NUM_BANDS).fill(1.0);
-    const totals = new Array(this.NUM_BANDS).fill(0);
-    const norms = new Array(this.NUM_BANDS).fill(0);
-    for (const ctx of this.state.contexts.values()) {
-      const weight = 0.25 + ctx.confidence * 0.75;
-      for (let i = 0; i < this.NUM_BANDS; i++) {
-        totals[i] += (ctx.variance[i] ?? 0.5) * weight;
-        norms[i] += weight;
-      }
-    }
-    return totals.map((sum, i) => clamp(sum / Math.max(1e-3, norms[i]), 0.05, 1.2));
-  }
-
   private blendGains(gainsArray: number[][], weights: number[]): number[] {
     const result = new Array(this.NUM_BANDS).fill(0);
-    const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
     for (let i = 0; i < gainsArray.length; i++) {
-      const w = weights[i] / totalWeight;
       for (let j = 0; j < this.NUM_BANDS; j++) {
-        result[j] += gainsArray[i][j] * w;
+        result[j] += gainsArray[i][j] * weights[i];
       }
     }
     return result;
@@ -411,37 +376,25 @@ export function serializeContextualState(state: ContextualPreferenceState): stri
 
 export function deserializeContextualState(json: string): ContextualPreferenceState {
   const data = JSON.parse(json);
-  const safeArray = (raw: any, defaultValue: number) => {
-    if (!Array.isArray(raw)) return new Array(10).fill(defaultValue);
-    const slice = raw.slice(0, 10).map((v) => Number.isFinite(Number(v)) ? Number(v) : defaultValue);
-    return slice.concat(new Array(Math.max(0, 10 - slice.length)).fill(defaultValue));
-  };
-
   const contextsMap = new Map<string, any>(
     (data.contexts || []).map((ctx: any) => [
       ctx.contextKey,
       {
         ...ctx,
-        gains: safeArray(ctx.gains, 0),
-        mean: safeArray(ctx.mean, 0),
-        variance: safeArray(ctx.variance, 0.5),
-        alphas: safeArray(ctx.alphas, 1),
-        betas: safeArray(ctx.betas, 1),
-        confidence: Number.isFinite(ctx.confidence) ? ctx.confidence : 0.3,
-        sampleSize: Number.isFinite(ctx.sampleSize) ? ctx.sampleSize : 0,
-        lastUpdated: Number.isFinite(ctx.lastUpdated) ? ctx.lastUpdated : Date.now(),
+        alphas: ctx.alphas || new Array(10).fill(1),
+        betas: ctx.betas || new Array(10).fill(1),
       },
     ])
   );
 
   return {
-    globalGains: safeArray(data.globalGains, 0),
-    globalUncertainty: safeArray(data.globalUncertainty, 1),
+    globalGains: data.globalGains,
+    globalUncertainty: data.globalUncertainty,
     contexts: contextsMap,
-    totalInteractions: Number.isFinite(data.totalInteractions) ? data.totalInteractions : 0,
-    learningRate: Number.isFinite(data.learningRate) ? data.learningRate : 0.05,
-    memoryDecay: Number.isFinite(data.memoryDecay) ? data.memoryDecay : 0.95,
-    explorationBonus: Number.isFinite(data.explorationBonus) ? data.explorationBonus : 0.1,
+    totalInteractions: data.totalInteractions,
+    learningRate: data.learningRate,
+    memoryDecay: data.memoryDecay,
+    explorationBonus: data.explorationBonus,
   };
 }
 
@@ -570,7 +523,7 @@ export function exampleContextualLearning() {
   };
 
   const suggestion = learner.suggestGainsForContext(newContext);
-  console.log('Suggested EQ:', suggestion.gains);
-  console.log('Confidence:', suggestion.confidence);
-  console.log('Similar contexts:', suggestion.contexts);
+  logger.info('Suggested EQ:', suggestion.gains);
+  logger.info('Confidence:', suggestion.confidence);
+  logger.info('Similar contexts:', suggestion.contexts);
 }

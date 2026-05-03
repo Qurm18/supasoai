@@ -1,6 +1,9 @@
 import { useCallback } from 'react';
 import { AudioEngine } from '@/lib/audio-engine';
 import { AB_PREVIEW_GAINS } from '@/lib/audio-engine';
+import { logger } from '@/lib/logger';
+
+import { UseTuningABReturn } from '@/lib/types';
 
 export function useTuningAB(
   audioSource: string,
@@ -11,7 +14,7 @@ export function useTuningAB(
   setAudioSource: (s: string) => void,
   setCurrentTrackName: (n: string) => void,
   TRACKS: any[]
-) {
+): UseTuningABReturn {
   const handlePreviewAB = useCallback(async (
     scenarioId: string,
     branch: 'A' | 'B',
@@ -39,7 +42,7 @@ export function useTuningAB(
           const el = hookAudioRef.current!;
           const done = () => { el.removeEventListener('canplay', done); resolve(); };
           el.addEventListener('canplay', done, { once: true });
-          setTimeout(done, 1500);
+          setTimeout(done, 5000);
         });
         
         if (seekTime !== undefined && isFinite(seekTime)) hookAudioRef.current.currentTime = seekTime;
@@ -69,10 +72,10 @@ export function useTuningAB(
             await hookEngineRef.current.gainMatchAB(effectiveUrl, scenarioId, seekRef, 3);
           }
         } catch (err) {
-          console.warn('[AI-01] LUFS gain-match failed (non-fatal):', err);
+          logger.warn('[AI-01] LUFS gain-match failed (non-fatal):', err);
         }
       } else {
-        console.debug('[AI-01] Skipping LUFS match for blob: URL — user-uploaded file.');
+        logger.debug('[AI-01] Skipping LUFS match for blob: URL — user-uploaded file.');
       }
       hookEngineRef.current.crossfadeTo(branch);
     }

@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 
 // ─── Audio output / source device inspector ───────────────────────────────────
 // Provides: enumeration of output devices, label-based categorisation
@@ -334,7 +335,7 @@ export async function setOutputSink(ctx: AudioContext, deviceId: string): Promis
     await c.setSinkId(deviceId);
     return true;
   } catch (err) {
-    console.warn('setSinkId failed:', err);
+    logger.warn('setSinkId failed:', err);
     return false;
   }
 }

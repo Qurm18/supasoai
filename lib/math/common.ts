@@ -2,6 +2,79 @@
  * SONIC — Common Math Helpers
  */
 
+let precomputedWindow: Float32Array | null = null;
+
+export function getPrecomputedWindow(size: number, windowType: 'hann' | 'hamming' = 'hann'): Float32Array {
+  if (!precomputedWindow || precomputedWindow.length !== size) {
+    precomputedWindow = new Float32Array(size);
+    for (let i = 0; i < size; i++) {
+      if (windowType === 'hann') {
+        precomputedWindow[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (size - 1)));
+      } else {
+        precomputedWindow[i] = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (size - 1));
+      }
+    }
+  }
+  return precomputedWindow;
+}
+
+export class ContentHashCache {
+  private cache = new Map<number, { value: any; timestamp: number }>();
+  private maxSize = 30;
+  private ttlMs = 1000; // short TTL because data changes rapidly
+
+  getKey(arr: Float32Array | number[], extra: string = ''): number {
+    let hash = 0;
+    const step = Math.max(1, Math.floor(arr.length / 40)); // sample 40 points for speed
+    for (let i = 0; i < arr.length; i += step) {
+      hash = ((hash << 5) - hash) + arr[i];
+      hash |= 0;
+    }
+    // mix in extra param
+    hash = ((hash << 5) - hash) + extra.length;
+    return Math.abs(hash);
+  }
+
+  get(hash: number) {
+    const entry = this.cache.get(hash);
+    if (entry && Date.now() - entry.timestamp < this.ttlMs) {
+      return entry.value;
+    }
+    return null;
+  }
+
+  set(hash: number, value: any) {
+    if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
+    }
+    this.cache.set(hash, { value, timestamp: Date.now() });
+  }
+
+  clear() { this.cache.clear(); }
+}
+
+export const featureCache = new ContentHashCache();
+
+export function computeSpectralCentroid(magnitude: Float32Array, sampleRate: number): number {
+  const key = featureCache.getKey(magnitude, `centroid_${sampleRate}`);
+  const cached = featureCache.get(key);
+  if (cached) return cached;
+
+  let numerator = 0, denominator = 0;
+  for (let i = 0; i < magnitude.length; i++) {
+    const freq = (i * sampleRate) / (magnitude.length * 2);
+    numerator += freq * magnitude[i];
+    denominator += magnitude[i];
+  }
+  const result = denominator === 0 ? 0 : numerator / denominator;
+  
+  featureCache.set(key, result);
+  return result;
+}
+
 export function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
@@ -212,9 +285,9 @@ export function entropyAwareQVector(
   });
 }
 
-export function entropy(data: any[]): number {
+export function entropy(data: unknown[]): number {
   if (data.length === 0) return 0;
-  const counts = new Map<any, number>();
+  const counts = new Map<unknown, number>();
   for (const v of data) {
     counts.set(v, (counts.get(v) || 0) + 1);
   }
@@ -226,7 +299,7 @@ export function entropy(data: any[]): number {
   return h;
 }
 
-export function normalisedMutualInformation(a: any[], b: any[]): number {
+export function normalisedMutualInformation(a: unknown[], b: unknown[]): number {
   const hA = entropy(a);
   const hB = entropy(b);
   if (hA + hB === 0) return 0;

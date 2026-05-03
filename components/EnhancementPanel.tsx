@@ -13,6 +13,21 @@ interface EnhancementPanelProps {
   onEnhancementChange: (params: Partial<EnhancementParams>) => void;
 }
 
+function TogglePill({ active, label, color }: { active: boolean; label: string; color: 'cyan' | 'purple' | 'amber' }) {
+  if (!active) return null;
+  const colors = {
+    cyan: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/20',
+    purple: 'bg-purple-500/15 text-purple-400 border-purple-500/20',
+    amber: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+  };
+  
+  return (
+    <span className={`text-[8px] font-mono px-2 py-0.5 rounded-full border ${colors[color]} animate-in fade-in zoom-in duration-300`}>
+      {label}
+    </span>
+  );
+}
+
 export function EnhancementPanel({
   showEnhancement,
   setShowEnhancement,
@@ -29,14 +44,14 @@ export function EnhancementPanel({
         <div className="flex items-center gap-3">
           <div className={`w-2 h-2 rounded-full ${enhancement.losslessMode ? 'bg-cyan-400 animate-pulse' : 'bg-[#F27D26] animate-pulse'}`} />
           <span className="text-[10px] font-mono text-[#8E9299] uppercase tracking-widest font-bold">Acoustic Enhancement</span>
-          <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${enhancement.losslessMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-orange-500/20 text-orange-400'}`}>
-            {enhancement.losslessMode ? 'BIT-PERFECT' : 'ENHANCED'}
-          </span>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2">
-            {enhancement.exciterAmount > 0 && <span className="text-[8px] font-mono text-amber-400/80 bg-amber-400/10 px-1.5 py-0.5 rounded border border-amber-400/20">Exciter</span>}
-            {enhancement.bassEnhance > 0 && <span className="text-[8px] font-mono text-cyan-400/80 bg-cyan-400/10 px-1.5 py-0.5 rounded border border-cyan-400/20">Bass</span>}
+        <div className="flex items-center gap-2">
+          {/* Active summary pills -- always visible */}
+          <div className="flex items-center gap-1.5 mr-2">
+            <TogglePill active={enhancement.losslessMode} label="BIT-PERFECT" color="cyan" />
+            <TogglePill active={enhancement.antiFatigue} label="SAFE" color="purple" />
+            <TogglePill active={enhancement.exciterAmount > 0} label="EXCITER" color="amber" />
+            <TogglePill active={enhancement.bassEnhance > 0} label="SUB-BASS" color="cyan" />
           </div>
           <ChevronDown className={`w-4 h-4 text-[#8E9299] transition-transform ${showEnhancement ? 'rotate-180' : ''}`} />
         </div>
@@ -63,7 +78,21 @@ export function EnhancementPanel({
                     onClick={() => onEnhancementChange({ losslessMode: !enhancement.losslessMode })}
                     className={`relative w-10 h-5 rounded-full transition-all ${enhancement.losslessMode ? 'bg-cyan-500' : 'bg-white/10'}`}
                   >
-                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all shadow-md ${enhancement.losslessMode ? 'left-5.5' : 'left-0.5'}`} />
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all shadow-md ${enhancement.losslessMode ? 'left-[22px]' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                {/* Anti-Fatigue toggle */}
+                <div className="flex items-center justify-between p-3 rounded-xl bg-purple-400/5 border border-purple-400/10">
+                  <div>
+                    <div className="text-[10px] font-bold text-purple-400/90 uppercase tracking-tight">Anti-Fatigue Engine</div>
+                    <div className="text-[8px] font-mono text-[#8E9299]">Real-time Loudness & Transient Control</div>
+                  </div>
+                  <button
+                    onClick={() => onEnhancementChange({ antiFatigue: !enhancement.antiFatigue })}
+                    className={`relative w-10 h-5 rounded-full transition-all ${enhancement.antiFatigue ? 'bg-purple-500' : 'bg-white/10'}`}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all shadow-md ${enhancement.antiFatigue ? 'left-[22px]' : 'left-0.5'}`} />
                   </button>
                 </div>
 
@@ -148,6 +177,10 @@ export function EnhancementPanel({
                    <div className="flex items-center gap-2">
                       <span className="text-[8px] font-mono text-[#8E9299] uppercase">64-bit Core</span>
                       <div className={`w-1.5 h-1.5 rounded-full ${enhancement.highQualityMode ? 'bg-green-400 shadow-[0_0_8px_#4ade80]' : 'bg-white/10'}`} />
+                   </div>
+                   <div className="flex items-center gap-2 border-l border-white/10 pl-4" title="Antiderivative Anti-Aliasing analytically integrates non-linear functions to eliminate aliasing and intermodulation distortion.">
+                      <span className="text-[8px] font-mono text-fuchsia-400/80 uppercase">ADAA Math Engine Active</span>
+                      <div className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 shadow-[0_0_8px_#c026d3] animate-pulse" />
                    </div>
                 </div>
                 <button

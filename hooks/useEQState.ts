@@ -1,11 +1,12 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { EQBand, DEFAULT_BANDS } from '@/lib/audio-engine';
+import { EQBand, DEFAULT_BANDS, AudioEngine } from '@/lib/audio-engine';
 import { optimalQ } from '@/lib/math';
 import { useEQHistory } from '@/hooks/use-eq-history';
 import { persistCurrentState } from '@/lib/profile-store';
+import { loadCurrentState } from '@/lib/profile-store';
 
 export function useEQState(
-  hookEngineRef: any,
+  hookEngineRef: React.MutableRefObject<AudioEngine | null>,
   setPreAmp: (p: number) => void,
   setIsAICalibrated: (v: boolean) => void,
   setProfileName: (n: string | null) => void,
@@ -45,29 +46,27 @@ export function useEQState(
     } else {
       hookEngineRef.current?.updateBandParams(index, params);
     }
+    setBands(newBands);
+
+    if (params.gain !== undefined) history.push(newBands, preAmpControl);
 
     const maxGain = Math.max(...newBands.map((b) => b.gain));
     const newPreAmp = maxGain > 0 ? -maxGain * 0.5 : 0;
-
-    if (params.gain !== undefined) history.push(newBands, newPreAmp);
-
-    setBands(newBands);
     setPreAmp(newPreAmp);
     setPreAmpControl(newPreAmp);
     hookEngineRef.current?.setPreAmp(newPreAmp);
     debouncedPersist(newBands, newPreAmp);
-  }, [bands, history, hookEngineRef, setPreAmp, debouncedPersist]);
+  }, [bands, history, preAmpControl, hookEngineRef, setPreAmp, debouncedPersist]);
 
   const handleReset = useCallback(() => {
     history.push(bands, preAmpControl, 'Before reset');
-    const resetBands = DEFAULT_BANDS.map((band) => ({ ...band }));
-    setBands(resetBands);
-    resetBands.forEach((band, i) => hookEngineRef.current?.updateBandParams(i, band));
+    setBands(DEFAULT_BANDS);
+    DEFAULT_BANDS.forEach((_, i) => hookEngineRef.current?.updateBand(i, 0));
     setIsAICalibrated(false);
     setProfileName(null);
     handlePreAmpChange(0);
     setPreAmpControl(0);
-    debouncedPersist(resetBands, 0);
+    debouncedPersist(DEFAULT_BANDS, 0);
   }, [bands, preAmpControl, history, debouncedPersist, setIsAICalibrated, setProfileName, hookEngineRef, handlePreAmpChange]);
 
   const handleUndo = useCallback(() => {

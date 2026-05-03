@@ -8,6 +8,7 @@
  */
 
 import { fftInPlace } from './fft';
+import { logger } from '@/lib/logger';
 
 export type WelchWindowType = 'hann' | 'hamming' | 'blackman' | 'blackmanHarris' | 'kaiser';
 
@@ -371,5 +372,5 @@ export async function exampleWelchAnalysis(audioBuffer: AudioBuffer) {
 
   const result = analyzer.analyze(new Float32Array(timeDomain));
 
-  console.log('Welch FFT Analysis:', result.frequencies.length, 'bins');
+  logger.info('Welch FFT Analysis:', result.frequencies.length, 'bins');
 }

@@ -8,7 +8,7 @@ class DynamicEQProcessor extends AudioWorkletProcessor {
     const params = [];
     for (let i = 0; i < 10; i++) {
       params.push({ name: `gain${i}`, defaultValue: 0 });
-      params.push({ name: `threshold${i}`, defaultValue: -24 });
+      params.push({ name: `threshold${i}`, defaultValue: -10 });
       params.push({ name: `ratio${i}`, defaultValue: 2 });
       params.push({ name: `attack${i}`, defaultValue: 10 });
       params.push({ name: `release${i}`, defaultValue: 100 });
@@ -24,11 +24,9 @@ class DynamicEQProcessor extends AudioWorkletProcessor {
     // Envelope followers (one per band)
     this.envelopes = new Float32Array(this.numBands).fill(0);
     // Biquad states (one per band, per channel)
-    // We assume 2 channels
-    this.x1 = [new Float32Array(this.numBands), new Float32Array(this.numBands)];
-    this.x2 = [new Float32Array(this.numBands), new Float32Array(this.numBands)];
-    this.y1 = [new Float32Array(this.numBands), new Float32Array(this.numBands)];
-    this.y2 = [new Float32Array(this.numBands), new Float32Array(this.numBands)];
+    // Transposed DF-II Needs 2 states per channel
+    this.s1 = [new Float32Array(this.numBands), new Float32Array(this.numBands)];
+    this.s2 = [new Float32Array(this.numBands), new Float32Array(this.numBands)];
     
     // Band configurations (freq, q, type) - these come from messages usually as they are semi-static
     this.freqs = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
@@ -84,7 +82,20 @@ class DynamicEQProcessor extends AudioWorkletProcessor {
     }
 
     const invA0 = 1.0 / a0;
-    return [b0 * invA0, b1 * invA0, b2 * invA0, a1 * invA0, a2 * invA0];
+    let b0_out = b0 * invA0;
+    let b1_out = b1 * invA0;
+    let b2_out = b2 * invA0;
+    let a1_out = a1 * invA0;
+    let a2_out = a2 * invA0;
+
+    // Stability guard (Pole-Zero Check via Schur-Cohn)
+    // Ensures poles are safely inside the unit circle.
+    // If unstable, we fall back to a safe passthrough to prevent blowing up the audio stream.
+    if (!(Math.abs(a2_out) < 1.0 && Math.abs(a1_out) < (1.0 + a2_out))) {
+      b0_out = 1; b1_out = 0; b2_out = 0; a1_out = 0; a2_out = 0;
+    }
+
+    return [b0_out, b1_out, b2_out, a1_out, a2_out];
   }
 
   process(inputs, outputs, parameters) {
@@ -158,16 +169,17 @@ class DynamicEQProcessor extends AudioWorkletProcessor {
           [b0, b1, b2, a1, a2] = staticCoeffs;
         }
         
-        // 3. Apply Filter
-        const yL = b0 * sL + b1 * this.x1[0][b] + b2 * this.x2[0][b] - a1 * this.y1[0][b] - a2 * this.y2[0][b];
-        this.x2[0][b] = this.x1[0][b]; this.x1[0][b] = sL;
-        this.y2[0][b] = this.y1[0][b]; this.y1[0][b] = yL;
+        // 3. Apply Filter (Transposed Direct Form II)
+        // More robust against round-off errors than DF-I or DF-II
+        const yL = b0 * sL + this.s1[0][b];
+        this.s1[0][b] = b1 * sL - a1 * yL + this.s2[0][b];
+        this.s2[0][b] = b2 * sL - a2 * yL;
         output[0][s] = isFinite(yL) ? yL : sL;
 
         if (channelCount > 1) {
-          const yR = b0 * sR + b1 * this.x1[1][b] + b2 * this.x2[1][b] - a1 * this.y1[1][b] - a2 * this.y2[1][b];
-          this.x2[1][b] = this.x1[1][b]; this.x1[1][b] = sR;
-          this.y2[1][b] = this.y1[1][b]; this.y1[1][b] = yR;
+          const yR = b0 * sR + this.s1[1][b];
+          this.s1[1][b] = b1 * sR - a1 * yR + this.s2[1][b];
+          this.s2[1][b] = b2 * sR - a2 * yR;
           output[1][s] = isFinite(yR) ? yR : sR;
         }
       }

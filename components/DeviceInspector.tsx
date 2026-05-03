@@ -450,12 +450,11 @@ export const DeviceInspector: React.FC<DeviceInspectorProps> = ({
                         onClick={async () => {
                            try {
                              if (!isWebUSBEnabled) {
-                               const success = await onToggleWebUSB(true);
-                               // onToggleWebUSB might throw or return a boolean if it checks success
-                               setIsWebUSBEnabled(true);
+                               await onToggleWebUSB(true);
+                               setIsWebUSBEnabled(true); // only set after success (Fix #9)
                              } else {
-                               setIsWebUSBEnabled(false);
                                await onToggleWebUSB(false);
+                               setIsWebUSBEnabled(false); // only set after success (Fix #9)
                              }
                            } catch (err: any) {
                              if (err?.message?.includes('No device selected')) {

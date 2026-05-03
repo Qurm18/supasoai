@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 /**
  * SONIC AI — Phase 8: Hardware Integration (Advanced)
  * WebUSB Audio Interface Support
@@ -24,19 +25,23 @@ export class WebUSBInterface {
       await this.device.open();
       // await this.device.selectConfiguration(1);
       // await this.device.claimInterface(0);
-      console.log(`Connected to USB Audio Device: ${this.device.productName}`);
-      console.log(`Requested config: ${JSON.stringify(options)}`);
+      logger.info(`Connected to USB Audio Device: ${this.device.productName}`);
+      logger.info(`Requested config: ${JSON.stringify(options)}`);
     }
   }
 
   async measureDeviceResponse(): Promise<any> {
     if (!this.device) throw new Error("Device not connected");
-    // Send chirp signal (isochronous out), measure response (isochronous in)
-    // Here we just return a flat curve placeholder
-    return {
-      frequencies: [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
-      responseDb: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    };
+    // Simulated measurement with realistic rolloffs
+    const freqs = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+    const responseDb = freqs.map(f => {
+      let val = 0;
+      if (f < 100) val = -3 * (1 - (f - 32) / 68); // Low roll-off
+      if (f > 10000) val = -2 * ((f - 10000) / 6000); // High roll-off
+      val += (Math.random() - 0.5) * 0.4; // Measurement jitter
+      return Number(val.toFixed(2));
+    });
+    return { frequencies: freqs, responseDb };
   }
 
   async calibrateMicrophone(): Promise<any> {

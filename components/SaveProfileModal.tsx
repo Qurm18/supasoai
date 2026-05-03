@@ -27,17 +27,26 @@ export const SaveProfileModal: React.FC<SaveProfileModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[999] flex items-center justify-center bg-black/90 backdrop-blur-xl p-4"
+          className="fixed inset-0 z-[999] flex items-end sm:items-center justify-center bg-black/90 backdrop-blur-xl sm:p-4"
           onClick={onClose}
         >
           <motion.div
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
+            initial={{ y: "100%", opacity: 0, scale: 0.95 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            exit={{ y: "100%", opacity: 0, scale: 0.95 }}
             transition={{ type: 'spring', damping: 26, stiffness: 320 }}
             onClick={(e) => e.stopPropagation()}
-            className="bg-[#0f1013] border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl"
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={0.2}
+            onDragEnd={(e, info) => {
+              if (info.offset.y > 100) onClose();
+            }}
+            className="bg-[#0f1013] border-t sm:border border-white/10 rounded-t-3xl sm:rounded-2xl w-full max-w-sm p-6 shadow-2xl pb-10 sm:pb-6"
           >
+            <div className="w-full flex justify-center mb-4 sm:hidden">
+              <div className="w-12 h-1.5 bg-white/20 rounded-full" />
+            </div>
             <h3 className="text-base font-bold text-white tracking-tight mb-4">Save Profile</h3>
             <input
               type="text"

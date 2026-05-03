@@ -1,7 +1,7 @@
 /**
  * SONIC — Signal Processing Helpers
  */
-import { clamp, polyfit, KalmanFilter1D } from './common';
+import { clamp, polyfit, KalmanFilter1D, featureCache } from './common';
 
 export function adaptiveKalmanSmoothVector(
   values: number[],
@@ -149,6 +149,7 @@ export interface PeakInfo {
   index: number;
   interpolatedIndex: number;
   magnitude: number;
+  prominence?: number;
 }
 
 export function findPeaksParabolic(
@@ -160,6 +161,7 @@ export function findPeaksParabolic(
     minProminence?: number;
     minHeight?: number;
     minDistanceBins?: number;
+    useCache?: boolean;
   } = {}
 ): PeakInfo[] {
   const minMag = opts.minHeight !== undefined 
@@ -168,6 +170,13 @@ export function findPeaksParabolic(
   const minDist = opts.minDistanceBins ?? (opts.minDist ?? 5);
   const maxPeaks = opts.maxPeaks ?? 10;
   const minProminence = opts.minProminence ?? 0;
+  
+  if (opts.useCache) {
+    const key = featureCache.getKey(data, `peaks_${minMag}_${minDist}_${maxPeaks}_${minProminence}`);
+    const cached = featureCache.get(key);
+    if (cached) return cached;
+  }
+
   const candidates: (PeakInfo & { prominence: number })[] = [];
 
   for (let i = 1; i < data.length - 1; i++) {
@@ -199,5 +208,11 @@ export function findPeaksParabolic(
     const tooClose = accepted.some((a) => Math.abs(a.index - p.index) < minDist);
     if (!tooClose) accepted.push(p);
   }
+  
+  if (opts.useCache) {
+    const key = featureCache.getKey(data, `peaks_${minMag}_${minDist}_${maxPeaks}_${minProminence}`);
+    featureCache.set(key, accepted);
+  }
+
   return accepted;
 }

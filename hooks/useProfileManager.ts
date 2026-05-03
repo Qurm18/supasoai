@@ -2,7 +2,9 @@ import { useState, useCallback } from 'react';
 import { SavedProfile, getAllProfiles, saveProfile, deleteProfile as deleteProfileFromStore } from '@/lib/profile-store';
 import { EQBand } from '@/lib/audio-engine';
 
-export function useProfileManager() {
+import { UseProfileManagerReturn } from '@/lib/types';
+
+export function useProfileManager(): UseProfileManagerReturn {
   const [savedProfiles, setSavedProfiles] = useState<SavedProfile[]>([]);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [profileName, setProfileName] = useState<string | null>(null);
@@ -16,16 +18,11 @@ export function useProfileManager() {
     setSavedProfiles(getAllProfiles());
   }, []);
 
-  const handleSaveProfile = useCallback((bands: EQBand[], preAmp: number) => {
-    if (!saveNameInput) return;
-    saveProfile(saveNameInput, bands, preAmp, {
-      color: profileColor,
-      genre: profileGenre ?? 'General'
-    });
-    setSaveNameInput('');
-    setShowSaveDialog(false);
+  const handleSaveProfile = useCallback((name: string, bands: EQBand[], preAmp: number, metadata?: Partial<SavedProfile>) => {
+    const saved = saveProfile(name, bands, preAmp, metadata);
     refreshProfiles();
-  }, [saveNameInput, profileColor, profileGenre, refreshProfiles]);
+    return saved;
+  }, [refreshProfiles]);
 
   const deleteProfile = useCallback((id: string) => {
     deleteProfileFromStore(id);

@@ -170,12 +170,10 @@ export function tonalityFromBandFlatness(
   return out;
 }
 
-interface Peak { freqHz: number; magnitude: number; [key: string]: any; }
-
-export function filterHarmonicPeaks(
-  peaks: Peak[],
+export function filterHarmonicPeaks<T extends { freqHz: number; magnitude: number }>(
+  peaks: T[],
   opts: { toleranceCents?: number; minRatio?: number } = {}
-): Peak[] {
+): T[] {
   const toleranceCents = opts.toleranceCents ?? 50; // ±50 cents
   const minRatio = opts.minRatio ?? 0.8;            // harmonic phải < 80% fundamental để bị lọc
 
@@ -183,7 +181,7 @@ export function filterHarmonicPeaks(
 
   // Sắp xếp theo magnitude giảm dần
   const sorted = [...peaks].sort((a, b) => b.magnitude - a.magnitude);
-  const kept: Peak[] = [];
+  const kept: T[] = [];
 
   for (const peak of sorted) {
     // Kiểm tra peak này có phải harmonic của một peak đã giữ không

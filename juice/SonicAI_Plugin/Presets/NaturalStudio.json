@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "pluginName": "SonicAI",
+  "bankName": "Factory",
+  "presetName": "Natural Studio",
+  "parameters": {
+    "eq_band_0": 0.5,
+    "eq_band_1": -1.2,
+    "eq_band_2": 0.0,
+    "eq_band_3": 0.0,
+    "eq_band_4": 0.0,
+    "eq_band_5": 0.5,
+    "eq_band_6": 1.2,
+    "eq_band_7": 2.5,
+    "eq_band_8": 1.8,
+    "eq_band_9": 0.8,
+    "ai_mode": "auto-genre",
+    "room_acoustics_enabled": true,
+    "room_type": "studio",
+    "energy_scaling": 1.0,
+    "valence_scaling": 1.0
+  },
+  "metadata": {
+    "author": "Sonic AI Team",
+    "description": "Neutral studio room compensation with AI genre detection enabled."
+  }
+}

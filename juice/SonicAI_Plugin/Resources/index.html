@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Sonic AI Plugin GUI</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        #root { width: 100vw; height: 100vh; }
+        .loading { color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div class="loading">Initializing Sonic AI Bridge...</div>
+    </div>
+    
+    <!-- JUCE Integration Script -->
+    <script>
+        // Use the JUCE browser integration to communicate with C++
+        window.__JUCE__ = {
+            onParameterChange: (id, value) => {
+                console.log(`Plugin param ${id} changed to ${value}`);
+                // Dispatch event to React app inside the WebView
+                window.dispatchEvent(new CustomEvent('plugin-param', { detail: { id, value } }));
+            },
+            sendToNative: (msg) => {
+                // This calls back into the C++ PluginProcessor
+                if (window.juce) window.juce.postMessage(JSON.stringify(msg));
+            }
+        };
+
+        // Reuse the main application build
+        // In production, index.js is the compiled Next.js/React bundle
+        const script = document.createElement('script');
+        script.src = './index.js'; 
+        document.body.appendChild(script);
+    </script>
+</body>
+</html>

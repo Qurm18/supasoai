@@ -12,7 +12,7 @@ export interface OptimizeEQConstraints {
 
 /**
  * 5.1 Constrained Optimization with Perceptual Weighting
- * Sigmoid/Polynomial smoothing works, but QP solver bound constraints give professional results.
+ * Replacing the placeholder with a multi-pass gradient-descent like approach.
  */
 export function optimizeEQCurveConstrained(
   targetGains: number[],
@@ -24,38 +24,58 @@ export function optimizeEQCurveConstrained(
   converged: boolean;
   iterations: number;
 } {
-  // Simplified ADMM / Gradient Descent placeholder for constrained optimization
-  const optimizedGains = [...targetGains];
-  const qValues = new Array(targetGains.length).fill(1.414);
-  let error = 0;
+  const n = targetGains.length;
+  let currentGains = [...targetGains];
+  const qValues = new Array(n).fill(1.5);
+  
+  const MAX_ITER = 30;
+  let iterations = 0;
+  let totalError = 0;
 
-  for (let i = 0; i < optimizedGains.length; i++) {
-    // 1. Constrain Gain
-    optimizedGains[i] = Math.max(-constraints.maxGainPerBand, Math.min(constraints.maxGainPerBand, optimizedGains[i]));
-    
-    // 2. Smoothness Penalty (Laplacian)
-    if (i > 0 && i < optimizedGains.length - 1) {
-      const laplacian = optimizedGains[i - 1] - 2 * optimizedGains[i] + optimizedGains[i + 1];
-      optimizedGains[i] += constraints.smoothnessPenalty * laplacian * (constraints.perceptualWeighting[i] || 1);
+  for (iterations = 0; iterations < MAX_ITER; iterations++) {
+    let prevGains = [...currentGains];
+    totalError = 0;
+
+    for (let i = 0; i < n; i++) {
+      // 1. Target Tracking
+      const weight = constraints.perceptualWeighting[i] || 1;
+      let delta = (targetGains[i] - currentGains[i]) * 0.4 * weight;
+      
+      // 2. Smoothness / Curvature constraints
+      if (i > 0 && i < n - 1) {
+        const curvature = currentGains[i-1] - 2 * currentGains[i] + currentGains[i+1];
+        delta += curvature * constraints.smoothnessPenalty;
+      }
+
+      currentGains[i] += delta;
+
+      // 3. Hard Bound Constraints
+      currentGains[i] = Math.max(-constraints.maxGainPerBand, Math.min(constraints.maxGainPerBand, currentGains[i]));
+      
+      totalError += Math.abs(currentGains[i] - targetGains[i]);
     }
 
-    error += Math.abs(optimizedGains[i] - targetGains[i]);
+    // Check convergence
+    let maxDiff = 0;
+    for (let i = 0; i < n; i++) {
+       maxDiff = Math.max(maxDiff, Math.abs(currentGains[i] - prevGains[i]));
+    }
+    if (maxDiff < 0.01) break;
   }
 
-  // 3. Slope constraints mapping to Q values
-  for (let i = 0; i < optimizedGains.length - 1; i++) {
-    const slope = Math.abs(optimizedGains[i] - optimizedGains[i + 1]);
-    if (slope > constraints.maxSlopeChange) {
-      qValues[i] = Math.min(constraints.maxQLeverage, qValues[i] * (slope / constraints.maxSlopeChange));
-    }
+  // Final Slope mapping to Q values (heuristic mapping)
+  for (let i = 0; i < n - 1; i++) {
+    const slope = Math.abs(currentGains[i] - currentGains[i + 1]);
+    const normalizedSlope = slope / 6; // relative to 6dB step
+    qValues[i] = Math.min(constraints.maxQLeverage, 0.7 * (1 + normalizedSlope));
   }
 
   return {
-    gains: optimizedGains,
-    qValues,
-    residualError: error,
-    converged: true,
-    iterations: 15
+    gains: currentGains.map(g => Number(g.toFixed(2))),
+    qValues: qValues.map(q => Number(q.toFixed(2))),
+    residualError: Number(totalError.toFixed(3)),
+    converged: iterations < MAX_ITER,
+    iterations
   };
 }
 

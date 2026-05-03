@@ -1,7 +1,9 @@
 import { useState, useCallback } from 'react';
 import { TasteResult, ChoiceReason, ScenarioChoiceAnalysis } from '@/lib/ai-engine';
 
-export function useCalibration() {
+import { UseCalibrationReturn } from '@/lib/types';
+
+export function useCalibration(): UseCalibrationReturn {
   const [showWizard, setShowWizard] = useState(false);
   const [isAICalibrated, setIsAICalibrated] = useState(false);
   const [calibrationConfidence, setCalibrationConfidence] = useState<number>(0);

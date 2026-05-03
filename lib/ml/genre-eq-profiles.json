@@ -1,0 +1,52 @@
+{
+  "Classical": {
+    "description": "Natural and clear, subtle sub-bass lift for room depth, flat mids.",
+    "eqCurve": [2, 0, 0, 0, 0, 0, 1, 2, 2, 1],
+    "q": [0.7, 0.7, 0.7, 0.7, 0.7, 0.8, 1.0, 1.0, 0.9, 0.7]
+  },
+  "Jazz": {
+    "description": "Warm mids, smooth highs to reduce cymbal harshness, tight acoustic bass.",
+    "eqCurve": [1, 2, 1, 0, 0, -1, -1, 0, 1, 0],
+    "q": [1.0, 1.0, 0.8, 0.7, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7]
+  },
+  "Pop": {
+    "description": "Vocal forward, energetic highs, controlled 'commercial' bass.",
+    "eqCurve": [-1, 0, 1, 2, 3, 2, 1, 2, 3, 2],
+    "q": [0.7, 0.8, 1.0, 1.2, 1.2, 1.1, 0.9, 1.0, 1.2, 1.0]
+  },
+  "Rock": {
+    "description": "Classic V-shape, boosting kick punch and electric guitar harmonics.",
+    "eqCurve": [4, 2, -1, -2, -1, 0, 2, 3, 2, 1],
+    "q": [1.2, 1.0, 0.8, 0.7, 0.7, 0.8, 1.1, 1.2, 1.0, 0.8]
+  },
+  "Electronic/EDM": {
+    "description": "Deep sub-bass impact, aggressive high-end sizzle for synths.",
+    "eqCurve": [6, 4, 1, -2, -1, 0, 2, 4, 5, 3],
+    "q": [1.5, 1.3, 0.9, 0.7, 0.7, 0.8, 1.2, 1.4, 1.5, 1.2]
+  },
+  "Hip-Hop/Rap": {
+    "description": "Dominant low-end, crisp vocal presence, slightly pulled back mid-range.",
+    "eqCurve": [5, 6, 2, -1, -2, 0, 1, 2, 3, 1],
+    "q": [1.4, 1.5, 1.1, 0.8, 0.7, 0.8, 1.0, 1.1, 1.2, 1.0]
+  },
+  "Metal": {
+    "description": "Heavy low-mids for guitar chugging, scooped mids, ultra-bright highs.",
+    "eqCurve": [3, 2, 3, -4, -3, -1, 2, 4, 4, 2],
+    "q": [1.1, 1.0, 1.3, 1.5, 1.4, 1.0, 1.2, 1.3, 1.2, 1.0]
+  },
+  "Country": {
+    "description": "Mid-range clarity for storytelling vocals and acoustic instrumentation.",
+    "eqCurve": [0, 1, 2, 3, 2, 1, 0, 1, 1, 0],
+    "q": [0.8, 0.9, 1.1, 1.2, 1.1, 1.0, 0.9, 0.9, 0.9, 0.8]
+  },
+  "R&B/Soul": {
+    "description": "Velvety smooth low-mids, emphasized 'air' frequencies.",
+    "eqCurve": [2, 3, 2, 0, 0, 1, 1, 2, 4, 5],
+    "q": [1.0, 1.1, 1.0, 0.8, 0.8, 0.9, 1.0, 1.1, 1.4, 1.5]
+  },
+  "Ambient/Experimental": {
+    "description": "Spacious, wide response, soft transitions, airy textures.",
+    "eqCurve": [1, 2, 1, 0, -1, 0, 1, 2, 4, 3],
+    "q": [0.8, 0.8, 0.8, 0.7, 0.7, 0.7, 0.9, 1.0, 1.2, 1.1]
+  }
+}

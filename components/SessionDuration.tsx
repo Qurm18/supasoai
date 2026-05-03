@@ -5,7 +5,7 @@ export const SessionDuration = ({ isPlaying }: { isPlaying: boolean }) => {
   const [duration, setDuration] = useState(0);
 
   useEffect(() => {
-    let timer: any;
+    let timer: ReturnType<typeof setInterval>;
     if (isPlaying) {
       timer = setInterval(() => {
         setDuration(prev => prev + 1);

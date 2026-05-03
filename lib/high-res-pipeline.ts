@@ -1,4 +1,5 @@
 import { webUSB } from './webusb-audio';
+import { logger } from '@/lib/logger';
 
 // Pipeline Âm thanh Chất lượng Cao (High-Res Audio Pipeline)
 // Dựa trên chiến lược: Fetch -> Decode -> Transfer -> Process -> Destination
@@ -78,6 +79,9 @@ export class HighResAudioPipeline {
       this.visWorker.terminate();
     }
     this.visWorker = new Worker('/workers/visualizer-worker.js');
+    this.visWorker.onerror = (err) => {
+      logger.error('[HighResPipeline] Visualizer worker error:', err);
+    };
     
     // Use OffscreenCanvas
     const offscreen = canvas.transferControlToOffscreen();
@@ -89,32 +93,51 @@ export class HighResAudioPipeline {
     this.highResNode.port.postMessage({ type: 'setup_port', port: channel.port2 }, [channel.port2]);
   }
 
+  public detachVisualizer() {
+    if (this.visWorker) {
+      this.visWorker.terminate();
+      this.visWorker = null;
+    }
+  }
+
   // Thuật toán giả lập Wasm Decoder hoặc Offline Decode PCM Float32Array nguyên bản
   public async loadAndDecode(fileUrl: string) {
-    const response = await fetch(fileUrl);
-    const arrayBuffer = await response.arrayBuffer();
+    try {
+      const response = await fetch(fileUrl);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const arrayBuffer = await response.arrayBuffer();
 
-    // Trong thực tế, chúng ta có thể gọi một Wasm Decoder (ffmpeg.wasm/libflac.js) ở đây. 
-    // Giải pháp thay thế (Fallback Plan) theo Red-Teaming:
-    // Vì không cài đặt wasm module, chúng ta sử dụng OfflineAudioContext hoặc decodeAudioData để trích xuất PCM.
-    
-    // Tạo temporary context (không gắn với hardware) để giải mã offline với rate cố định của file
-    const tempContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const audioBuffer = await tempContext.decodeAudioData(arrayBuffer);
-    
-    // Đồng bộ hóa Sample Rate
-    await this.init(audioBuffer.sampleRate);
-    
-    // Lấy PCM Float32Array
-    const channels = [];
-    for(let i=0; i<audioBuffer.numberOfChannels; i++){
-       channels.push(audioBuffer.getChannelData(i));
+      // Trong thực tế, chúng ta có thể gọi một Wasm Decoder (ffmpeg.wasm/libflac.js) ở đây. 
+      // Giải pháp thay thế (Fallback Plan) theo Red-Teaming:
+      // Vì không cài đặt wasm module, chúng ta sử dụng OfflineAudioContext hoặc decodeAudioData để trích xuất PCM.
+      
+      // Fix: Decode probe to detect actual file sample rate
+      const probeCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 44100 });
+      const probeBuffer = await probeCtx.decodeAudioData(arrayBuffer.slice(0));
+      const fileSampleRate = probeBuffer.sampleRate;
+      await probeCtx.close();
+
+      // Initialize engine with the correct discovered rate
+      await this.init(fileSampleRate);
+      
+      const decodeCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: fileSampleRate });
+      const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
+      await decodeCtx.close();
+      
+      // Lấy PCM Float32Array
+      const channels = [];
+      for(let i=0; i<audioBuffer.numberOfChannels; i++){
+         channels.push(audioBuffer.getChannelData(i));
+      }
+      
+      // Chuyển dữ liệu cho Worklet thông qua MessagePort để sử dụng Circular / Ring Buffer
+      // Chia nhỏ (chunk) để không block thread nếu file quá lớn
+      this.sendToWorklet(channels);
+      this.isLoaded = true;
+    } catch (err) {
+      logger.error('[HighResPipeline] Failed to load/decode audio:', err);
+      throw err; // Re-throw to inform caller
     }
-    
-    // Chuyển dữ liệu cho Worklet thông qua MessagePort để sử dụng Circular / Ring Buffer
-    // Chia nhỏ (chunk) để không block thread nếu file quá lớn
-    this.sendToWorklet(channels);
-    this.isLoaded = true;
   }
 
   private sendToWorklet(channels: Float32Array[], chunkSize=8192) {
